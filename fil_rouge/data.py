@@ -19,7 +19,25 @@ def valider(df: pd.DataFrame) -> pd.DataFrame:
     Colonnes absentes, colonnes entièrement vides, nombres lus comme du texte,
     identifiant de partie en double, résultat inconnu.
     """
-    raise NotImplementedError("TODO exo 1")
+    colonnes = [
+        "partie_id", "date_jeu", "cadence", "couleur", "resultat",
+        "elo_joueur", "elo_adverse", "ouverture_famille", "gaffes_joueur",
+    ]  # fmt: skip
+    absentes = [c for c in colonnes if c not in df.columns]
+    if absentes:
+        raise ValueError(f"Colonnes absentes : {absentes}")
+    vides = [c for c in colonnes if df[c].isna().all()]
+    if vides:
+        raise ValueError(f"Colonnes entièrement vides : {vides}")
+    for c in ["elo_joueur", "elo_adverse", "gaffes_joueur"]:
+        if not pd.api.types.is_numeric_dtype(df[c]):
+            raise ValueError(f"La colonne {c} devrait être numérique, pas du texte")
+    if df["partie_id"].duplicated().any():
+        raise ValueError("partie_id en double : une ligne doit être une partie")
+    inconnus = set(df["resultat"].dropna()) - {"win", "draw", "lose"}
+    if inconnus:
+        raise ValueError(f"Résultats inconnus : {sorted(inconnus)}")
+    return df
 
 
 def load_data() -> pd.DataFrame:
@@ -32,12 +50,20 @@ def load_data() -> pd.DataFrame:
     resultat (victoire, nulle, défaite), score, annee, heure (UTC), ecart_elo
     (Elo de l'adversaire moins le mien), cadence.
     """
-    raise NotImplementedError("TODO exo 1")
+    df = pd.read_csv(DATA / "parties.csv", parse_dates=["date_jeu"])
+    df = valider(df)
+    df["score"] = df["resultat"].map({"win": 1, "draw": 0.5, "lose": 0})
+    df["resultat"] = df["resultat"].map({"win": "victoire", "draw": "nulle", "lose": "défaite"})
+    df["annee"] = df["date_jeu"].dt.year
+    df["heure"] = df["date_jeu"].dt.hour
+    df["ecart_elo"] = df["elo_adverse"] - df["elo_joueur"]
+    df["cadence"] = df["cadence"].fillna("aucune")
+    return df
 
 
 def load_coups() -> pd.DataFrame:
     """Un de mes coups jugés mauvais par ligne (data/echecs/coups_juges.csv)."""
-    raise NotImplementedError("TODO exo 1")
+    return pd.read_csv(DATA / "coups_juges.csv")
 
 
 def familles(df: pd.DataFrame, min_n: int = 30) -> pd.DataFrame:
@@ -46,7 +72,11 @@ def familles(df: pd.DataFrame, min_n: int = 30) -> pd.DataFrame:
     Colonnes : famille, n (parties), score, gaffes (par partie).
     Sous min_n parties le chiffre ne dit rien : écartez la famille.
     """
-    raise NotImplementedError("TODO exo 1")
+    t = df.groupby("ouverture_famille").agg(
+        n=("partie_id", "count"), score=("score", "mean"), gaffes=("gaffes_joueur", "mean")
+    )
+    t = t[t["n"] >= min_n].reset_index(names="famille")
+    return t.sort_values("score").reset_index(drop=True)
 
 
 if __name__ == "__main__":
