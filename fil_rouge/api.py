@@ -8,15 +8,64 @@ Lancer : uv run uvicorn api:app --app-dir fil_rouge --host 127.0.0.1 --port 8000
 Documentation interactive : http://127.0.0.1:8000/docs
 """
 
-from fastapi import FastAPI
+from pathlib import Path
+from typing import Literal
 
-from data import familles, load_data  # noqa: F401
+import joblib
+import pandas as pd
+from fastapi import FastAPI, Query
+from pydantic import BaseModel, Field
+
+from data import familles, load_data
 
 app = FastAPI(title="Mes parties d'échecs", version="1.0")
 
-# TODO 1. Charger les données une fois, au démarrage : df = load_data()
-# TODO 2. GET /ouvertures : cadence facultative (bullet, blitz ou rapid, avec Literal), min_n >= 1 ;
-#         les familles, la pire d'abord (familles de data.py)
-# TODO 3. GET /parties : cadence et couleur facultatives, limit entre 1 et 500 (Query)
-# Bonus. joblib.load(Path(__file__).parent / "model.joblib"), une classe Partie(BaseModel)
-#        (couleur, cadence, ecart_elo, heure de 0 à 23), POST /predict qui renvoie {"proba_victoire": ...}
+df = load_data()  # chargé une seule fois, au démarrage
+model = joblib.load(Path(__file__).parent / "model.joblib")
+
+Cadence = Literal["bullet", "blitz", "rapid"]
+
+
+class Partie(BaseModel):
+    couleur: Literal["white", "black"]
+    cadence: Cadence
+    ecart_elo: float = Field(ge=-1000, le=1000)
+    heure: int = Field(ge=0, le=23)
+
+
+@app.get("/ouvertures")
+def ouvertures(cadence: Cadence | None = None, min_n: int = Query(30, ge=1)):
+    """Familles d'ouvertures, la pire d'abord (score moyen)."""
+    vue = df if cadence is None else df[df["cadence"] == cadence]
+    return familles(vue, min_n).to_dict("records")
+
+
+@app.get("/parties")
+def parties(
+    cadence: Cadence | None = None,
+    couleur: Literal["white", "black"] | None = None,
+    limit: int = Query(10, ge=1, le=500),
+):
+    """Les parties les plus récentes d'abord, filtrables par cadence et couleur."""
+    vue = df
+    if cadence is not None:
+        vue = vue[vue["cadence"] == cadence]
+    if couleur is not None:
+        vue = vue[vue["couleur"] == couleur]
+    colonnes = [
+        "partie_id", "date_jeu", "cadence", "couleur", "resultat",
+        "ouverture_famille", "elo_joueur", "elo_adverse",
+        "gaffes_joueur", "precision_joueur",
+    ]  # fmt: skip
+    vue = vue.sort_values("date_jeu", ascending=False).head(limit)[colonnes].copy()
+    vue["date_jeu"] = vue["date_jeu"].dt.strftime("%Y-%m-%dT%H:%M:%S")
+    # JSON ne sait pas écrire NaN : on le remplace par None (null)
+    vue = vue.astype(object).where(vue.notna(), None)
+    return vue.to_dict("records")
+
+
+@app.post("/predict")
+def predict(partie: Partie):
+    """Probabilité de victoire d'une partie, d'après le modèle entraîné."""
+    X = pd.DataFrame([partie.model_dump()])
+    return {"proba_victoire": float(model.predict_proba(X)[0, 1])}  # colonne 1 = True
