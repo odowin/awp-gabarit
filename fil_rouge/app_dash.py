@@ -6,30 +6,93 @@ liste les parties, un clic sur une partie liste les coups jugés mauvais, dans d
 Lancer : uv run python fil_rouge/app_dash.py   (http://127.0.0.1:8050)
 """
 
-import dash_ag_grid as dag  # noqa: F401
-import plotly.express as px  # noqa: F401
-from dash import Dash, Input, Output, callback, dcc, html  # noqa: F401
+import dash_ag_grid as dag
+from dash import Dash, Input, Output, callback, dcc, html
 
-from data import familles, load_coups, load_data  # noqa: F401
+from data import familles, load_coups, load_data
+from figures import fig_familles
+
+df = load_data()  # lus une seule fois, au démarrage
+coups = load_coups()
 
 app = Dash(__name__, title="Mes parties d'échecs")
 server = app.server  # Dash tourne sur Flask
 
+# réglages AG Grid communs (AGENTS.md)
+GRILLE = {"columnSize": "responsiveSizeToFit", "defaultColDef": {"filter": True, "sortable": True}}
+OPTIONS = {
+    "theme": "themeBalham",
+    "animateRows": True,
+    "pagination": True,
+    "paginationPageSize": 10,
+}
+
+COLS_PARTIES = [
+    "partie_id",
+    "date_jeu",
+    "cadence",
+    "couleur",
+    "resultat",
+    "elo_adverse",
+    "gaffes_joueur",
+]
+COLS_COUPS = ["numero_coup", "coup", "meilleur_coup", "phase", "jugement"]
+
 app.layout = html.Div(
     [
         html.H2("Quelles ouvertures me coûtent des points ? Cliquez une barre"),
-        # TODO 1. un dcc.Slider(30, 60, 10, value=30, id="n-min") et un dcc.Graph(id="familles")
-        # TODO 2. un dag.AgGrid(id="parties"), une ligne sélectionnable d'un clic :
-        #         dashGridOptions={"rowSelection": {"mode": "singleRow", "enableClickSelection": True}}
-        # TODO 3. un dag.AgGrid(id="coups")
+        dcc.Slider(30, 60, 10, value=30, id="n-min"),
+        dcc.Graph(id="familles"),
+        html.H3("Parties de la famille"),
+        html.P("Cliquez une partie pour voir ses coups jugés."),
+        dag.AgGrid(
+            id="parties",
+            columnDefs=[{"field": c} for c in COLS_PARTIES],
+            dashGridOptions={
+                **OPTIONS,
+                "rowSelection": {"mode": "singleRow", "enableClickSelection": True},
+            },
+            **GRILLE,
+        ),
+        html.H3("Coups jugés de la partie"),
+        dag.AgGrid(
+            id="coups",
+            columnDefs=[{"field": c} for c in COLS_COUPS],
+            dashGridOptions=OPTIONS,
+            **GRILLE,
+        ),
     ]
 )
 
-# TODO 4. callback : value de "n-min" -> figure de "familles" (px.bar de familles(df, n_min), la pire en haut).
-#         Nommez-le autrement que familles (maj_familles par exemple) : sinon il masque la fonction de data.py
-# TODO 5. callback : clickData de "familles" -> rowData de "parties" (les parties de cette famille)
-# TODO 6. callback : selectedRows de "parties" -> rowData de "coups" (les coups jugés de cette partie)
+
+def en_records(table):
+    """Lignes prêtes pour AG Grid : les NaN deviennent None (JSON valide)."""
+    return table.astype(object).where(table.notna(), None).to_dict("records")
+
+
+@callback(Output("familles", "figure"), Input("n-min", "value"))
+def maj_familles(n_min):
+    return fig_familles(familles(df, n_min))
+
+
+@callback(Output("parties", "rowData"), Input("familles", "clickData"))
+def parties(click):
+    if not click:
+        return []
+    famille = click["points"][0]["y"]
+    lignes = df[df["ouverture_famille"] == famille].sort_values("date_jeu", ascending=False)
+    lignes = lignes.assign(date_jeu=lignes["date_jeu"].astype(str))
+    return en_records(lignes[COLS_PARTIES])
+
+
+@callback(Output("coups", "rowData"), Input("parties", "selectedRows"))
+def detail(rows):
+    if not rows:
+        return []
+    lignes = coups[coups["partie_id"] == rows[0]["partie_id"]]
+    return en_records(lignes[COLS_COUPS])
+
 
 if __name__ == "__main__":
     # debug=True : bouton « Callbacks » en bas à droite, le graphe des callbacks
-    app.run(debug=False, port=8050)
+    app.run(debug=True, port=8050)
