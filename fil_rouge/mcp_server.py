@@ -9,8 +9,9 @@ client : c'est normal. Pour tester : npx @modelcontextprotocol/inspector uv run 
 """
 
 import os
+from typing import Literal
 
-import requests  # noqa: F401
+import requests
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
@@ -26,12 +27,47 @@ HOTE = "0.0.0.0" if "PORT" in os.environ else "127.0.0.1"
 # le serveur est de toute façon public tant que le tunnel tourne.
 TUNNEL = os.environ.get("MCP_TUNNEL") == "1"
 SECU = TransportSecuritySettings(enable_dns_rebinding_protection=False) if TUNNEL else None
-mcp = FastMCP("echecs", host=HOTE, port=int(os.environ.get("PORT", "8001")), transport_security=SECU)
+mcp = FastMCP(
+    "echecs", host=HOTE, port=int(os.environ.get("PORT", "8001")), transport_security=SECU
+)
 
-# TODO 1. Une fonction qui appelle l'API et lève une erreur si la réponse n'est pas un succès
-# TODO 2. @mcp.tool() : mes pires ouvertures pour une cadence (GET /ouvertures). Typez cadence avec
-#         Literal["bullet", "blitz", "rapid"] : le LLM voit alors les valeurs permises
-# TODO 3. @mcp.tool() : mes chances de victoire dans une situation donnée (POST /predict, si vous avez fait le bonus)
+Cadence = Literal["bullet", "blitz", "rapid"]
+
+
+def appeler_api(chemin, params=None, corps=None):
+    """Appelle l'API (GET si pas de corps, POST sinon) et lève une erreur si la réponse n'est pas un succès."""
+    if corps is None:
+        r = requests.get(f"{API}{chemin}", params=params, timeout=10)
+    else:
+        r = requests.post(f"{API}{chemin}", json=corps, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+
+@mcp.tool()
+def pire_ouvertures(cadence: Cadence = "blitz", n: int = 5) -> list[dict]:
+    """Mes familles d'ouvertures, de la moins bonne à la meilleure, pour une cadence.
+
+    Pour chaque famille : famille, n (nombre de parties), score (score moyen, de 0 à 1) et
+    gaffes (gaffes par partie). Seules les familles jouées au moins 30 fois sont comptées.
+    """
+    return appeler_api("/ouvertures", {"cadence": cadence, "min_n": 30})[:n]
+
+
+@mcp.tool()
+def proba_victoire(
+    couleur: Literal["white", "black"], cadence: Cadence, ecart_elo: float, heure: int
+) -> dict:
+    """Probabilité que je gagne une partie, d'après une régression logistique.
+
+    couleur : "white" (blancs) ou "black" (noirs).
+    ecart_elo : Elo de l'adversaire moins mon Elo (positif si l'adversaire est plus fort).
+    heure : heure UTC de la partie, de 0 à 23.
+    Attention : ce modèle fait à peine mieux que le hasard, la probabilité n'est qu'indicative.
+    """
+    corps = {"couleur": couleur, "cadence": cadence, "ecart_elo": ecart_elo, "heure": heure}
+    return appeler_api("/predict", corps=corps)
+
 
 if __name__ == "__main__":
     # Derrière un tunnel : MCP_TUNNEL=1 MCP_TRANSPORT=http uv run python …, puis npx localtunnel --port 8001
